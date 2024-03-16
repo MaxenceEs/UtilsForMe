@@ -1,79 +1,80 @@
+import java.util.ArrayList;
+
+import org.eclipse.jface.dialogs.Dialog;
+import org.eclipse.jface.viewers.ArrayContentProvider;
+import org.eclipse.jface.viewers.ColumnLabelProvider;
+import org.eclipse.jface.viewers.ColumnWeightData;
+import org.eclipse.jface.viewers.TableLayout;
+import org.eclipse.jface.viewers.TableViewer;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.events.SelectionAdapter;
+import org.eclipse.swt.events.SelectionEvent;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
-import org.eclipse.swt.widgets.*;
+import org.eclipse.swt.widgets.Button;
+import org.eclipse.swt.widgets.Composite;
+import org.eclipse.swt.widgets.Control;
+import org.eclipse.swt.widgets.Shell;
 
-public class ErrorSummaryPopup extends Shell {
+public class ErrorSummaryDialog extends Dialog {
 
-    private Table table;
+    private ArrayList<ErrorInfo> errorList;
 
-    public ErrorSummaryPopup(Display display) {
-        super(display, SWT.DIALOG_TRIM | SWT.APPLICATION_MODAL);
-        createContents();
+    protected ErrorSummaryDialog(Shell parentShell, ArrayList<ErrorInfo> errorList) {
+        super(parentShell);
+        this.errorList = errorList;
     }
-
-    private void createContents() {
-        setText("Erreur de synthèse");
-        setSize(600, 400);
-        setLayout(new GridLayout(1, false));
-
-        table = new Table(this, SWT.BORDER | SWT.FULL_SELECTION);
-        table.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
-        table.setHeaderVisible(true);
-        table.setLinesVisible(true);
-
-        String[] titles = {"Type de contrôle", "Message d'erreur", "Objets en erreur", "Correction automatique"};
-        for (String title : titles) {
-            TableColumn column = new TableColumn(table, SWT.NONE);
-            column.setText(title);
-        }
-
-        // Définissez la largeur des colonnes
-        table.getColumn(0).setWidth(150);
-        table.getColumn(1).setWidth(200);
-        table.getColumn(2).setWidth(150);
-        table.getColumn(3).setWidth(150);
-
-        // Ajoutez une méthode pour ajouter des lignes à la table
-        addErrorRow("Type de contrôle 1", "Message d'erreur 1", null);
-        addErrorRow("Type de contrôle 2", "Message d'erreur 2", null);
-        // Ajoutez autant de lignes que nécessaire
-
-        pack();
-    }
-
-    private void addErrorRow(String controlType, String errorMessage, ArrayList<MyClassObject> objectsInError) {
-        TableItem item = new TableItem(table, SWT.NONE);
-        item.setText(0, controlType);
-        item.setText(1, errorMessage);
-        // Pour les objets en erreur, vous pouvez les afficher comme vous le souhaitez
-        // Par exemple, vous pouvez convertir la liste d'objets en une chaîne
-        // item.setText(2, convertObjectsToString(objectsInError));
-
-        Button autoFixButton = new Button(table, SWT.PUSH);
-        autoFixButton.setText("Correction automatique");
-        autoFixButton.addListener(SWT.Selection, event -> {
-            // Mettez ici le code pour déclencher la correction automatique
-        });
-        table.getColumn(3).setControl(autoFixButton);
-    }
-
-    // Ajoutez d'autres méthodes selon vos besoins, par exemple pour convertir une liste d'objets en une chaîne
 
     @Override
-    protected void checkSubclass() {
-        // Permet à la sous-classe de Shell de ne pas lever d'exception
+    protected Control createDialogArea(Composite parent) {
+        Composite container = (Composite) super.createDialogArea(parent);
+        GridLayout layout = new GridLayout(1, false);
+        container.setLayout(layout);
+
+        TableViewer tableViewer = new TableViewer(container, SWT.BORDER | SWT.FULL_SELECTION);
+        tableViewer.getTable().setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+        tableViewer.getTable().setHeaderVisible(true);
+
+        TableLayout tableLayout = new TableLayout();
+        tableViewer.getTable().setLayout(tableLayout);
+
+        tableLayout.addColumnData(new ColumnWeightData(30, 150, true));
+        tableLayout.addColumnData(new ColumnWeightData(50, 200, true));
+        tableLayout.addColumnData(new ColumnWeightData(20, 100, true));
+
+        tableViewer.setContentProvider(ArrayContentProvider.getInstance());
+
+        tableViewer.setLabelProvider(new ColumnLabelProvider() {
+            @Override
+            public String getText(Object element) {
+                ErrorInfo errorInfo = (ErrorInfo) element;
+                switch (columnIndex) {
+                    case 0:
+                        return errorInfo.getControlType();
+                    case 1:
+                        return errorInfo.getErrorMessage();
+                    case 2:
+                        return errorInfo.getErrorObjects().toString();
+                    default:
+                        return "";
+                }
+            }
+        });
+
+        tableViewer.setInput(errorList);
+
+        return container;
     }
 
-    public static void main(String[] args) {
-        Display display = new Display();
-        ErrorSummaryPopup popup = new ErrorSummaryPopup(display);
-        popup.open();
-        while (!popup.isDisposed()) {
-            if (!display.readAndDispatch()) {
-                display.sleep();
-            }
+    @Override
+    protected void createButtonsForButtonBar(Composite parent) {
+        createButton(parent, SWT.OK, "OK", true);
+    }
+
+    @Override
+    protected void buttonPressed(int buttonId) {
+        if (buttonId == SWT.OK) {
+            close();
         }
-        display.dispose();
     }
 }
