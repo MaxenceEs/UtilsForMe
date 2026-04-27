@@ -1,0 +1,244 @@
+package com.yourcompany.plugin.http;
+
+/**
+ * Stocke la configuration de session pour l'API REST.
+ * Instancier une fois, passer en paramètre à ApiClient.
+ */
+public class ApiSession {
+
+    private final String baseUrl;
+    private final String personalAccessToken;
+
+    private ApiSession(Builder builder) {
+        this.baseUrl = builder.baseUrl;
+        this.personalAccessToken = builder.personalAccessToken;
+    }
+
+    public String getBaseUrl() {
+        return baseUrl;
+    }
+
+    public String getBearerToken() {
+        // Format standard Authorization header
+        return "Bearer " + personalAccessToken;
+    }
+
+    // --- Builder pattern pour une construction lisible ---
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static class Builder {
+        private String baseUrl;
+        private String personalAccessToken;
+
+        public Builder baseUrl(String baseUrl) {
+            // Supprime le slash final pour éviter les doubles //
+            this.baseUrl = baseUrl.endsWith("/")
+                ? baseUrl.substring(0, baseUrl.length() - 1)
+                : baseUrl;
+            return this;
+        }
+
+        public Builder personalAccessToken(String token) {
+            this.personalAccessToken = token;
+            return this;
+        }
+
+        public ApiSession build() {
+            Objects.requireNonNull(baseUrl, "baseUrl is required");
+            Objects.requireNonNull(personalAccessToken, "token is required");
+            return new ApiSession(this);
+        }
+    }
+}
+
+
+package com.yourcompany.plugin.http;
+
+/**
+ * Centralise toutes les routes de l'API.
+ * Utiliser String.format() ou les méthodes utilitaires pour les routes paramétrées.
+ */
+public final class ApiRoutes {
+
+    private ApiRoutes() {} // Classe utilitaire, pas d'instanciation
+
+    // --- Routes statiques ---
+    public static final String PROJECTS       = "/api/projects";
+    public static final String CURRENT_USER   = "/api/user";
+
+    // --- Routes paramétrées ---
+    public static String project(String projectId) {
+        return "/api/projects/" + projectId;
+    }
+
+    public static String projectModels(String projectId) {
+        return "/api/projects/" + projectId + "/models";
+    }
+
+    public static String model(String projectId, String modelId) {
+        return "/api/projects/" + projectId + "/models/" + modelId;
+    }
+}
+
+
+package com.yourcompany.plugin.http;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpRequest.BodyPublishers;
+import java.net.http.HttpResponse;
+import java.net.http.HttpResponse.BodyHandlers;
+import java.time.Duration;
+
+/**
+ * Client HTTP configuré pour l'API REST.
+ * Thread-safe : le HttpClient sous-jacent est réutilisable.
+ */
+public class ApiClient {
+
+    private final ApiSession session;
+    private final HttpClient httpClient;
+
+    public ApiClient(ApiSession session) {
+        this.session = session;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+    }
+
+    // =========================================================
+    //  Méthodes publiques — une par verbe HTTP
+    // =========================================================
+
+    public ApiResponse get(String route) throws ApiException {
+        HttpRequest request = baseRequest(route)
+                .GET()
+                .build();
+        return send(request);
+    }
+
+    public ApiResponse post(String route, String jsonBody) throws ApiException {
+        HttpRequest request = baseRequest(route)
+                .POST(BodyPublishers.ofString(jsonBody))
+                .build();
+        return send(request);
+    }
+
+    public ApiResponse put(String route, String jsonBody) throws ApiException {
+        HttpRequest request = baseRequest(route)
+                .PUT(BodyPublishers.ofString(jsonBody))
+                .build();
+        return send(request);
+    }
+
+    public ApiResponse delete(String route) throws ApiException {
+        HttpRequest request = baseRequest(route)
+                .DELETE()
+                .build();
+        return send(request);
+    }
+
+    // =========================================================
+    //  Méthodes privées
+    // =========================================================
+
+    /**
+     * Construit la base de chaque requête : URL complète + headers communs.
+     */
+    private HttpRequest.Builder baseRequest(String route) {
+        URI uri = URI.create(session.getBaseUrl() + route);
+        return HttpRequest.newBuilder()
+                .uri(uri)
+                .timeout(Duration.ofSeconds(30))
+                .header("Authorization", session.getBearerToken())
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json");
+    }
+
+    /**
+     * Envoie la requête et encapsule la réponse ou l'erreur.
+     */
+    private ApiResponse send(HttpRequest request) throws ApiException {
+        try {
+            HttpResponse<String> response =
+                httpClient.send(request, BodyHandlers.ofString());
+
+            if (response.statusCode() >= 400) {
+                throw new ApiException(
+                    "HTTP " + response.statusCode() + " on " + request.uri(),
+                    response.statusCode(),
+                    response.body()
+                );
+            }
+            return new ApiResponse(response.statusCode(), response.body());
+
+        } catch (ApiException e) {
+            throw e; // Re-throw, pas de wrapping double
+        } catch (Exception e) {
+            throw new ApiException("Request failed: " + e.getMessage(), e);
+        }
+    }
+}
+
+
+// ApiResponse.java
+public record ApiResponse(int statusCode, String body) {
+    public boolean isSuccess() {
+        return statusCode >= 200 && statusCode < 300;
+    }
+}
+
+// ApiException.java
+public class ApiException extends Exception {
+    private final int httpStatus;    // 0 si erreur réseau
+    private final String responseBody;
+
+    public ApiException(String message, int httpStatus, String responseBody) {
+        super(message);
+        this.httpStatus = httpStatus;
+        this.responseBody = responseBody;
+    }
+
+    public ApiException(String message, Throwable cause) {
+        super(message, cause);
+        this.httpStatus = 0;
+        this.responseBody = null;
+    }
+
+    // getters...
+}
+
+
+
+// 1. Créer la session une fois (au démarrage du plugin ou à la connexion)
+ApiSession session = ApiSession.builder()
+        .baseUrl("https://my-capella-server.com")
+        .personalAccessToken("ghp_xxxxxxxxxxxx")
+        .build();
+
+ApiClient client = new ApiClient(session);
+
+// 2. Appeler les routes
+try {
+    // GET simple
+    ApiResponse projects = client.get(ApiRoutes.PROJECTS);
+    System.out.println(projects.body());
+
+    // GET avec route paramétrée
+    ApiResponse models = client.get(ApiRoutes.projectModels("proj-42"));
+
+    // POST avec body JSON
+    String body = """
+            { "name": "My Model", "type": "capella" }
+            """;
+    ApiResponse created = client.post(ApiRoutes.PROJECTS, body);
+
+} catch (ApiException e) {
+    // Afficher dans la console Eclipse ou une dialog
+    IStatus status = new Status(IStatus.ERROR, Activator.PLUGIN_ID, e.getMessage());
+    StatusManager.getManager().handle(status, StatusManager.SHOW);
+}
