@@ -1,0 +1,38 @@
+// 1. Récupérer le certificat à la première connexion
+public X509Certificate[] fetchAndStoreCert(String host, int port) throws Exception {
+    SSLContext ctx = createTrustAllSSLContext(); // seulement pour ce premier fetch
+    SSLSocket socket = (SSLSocket) ctx.getSocketFactory().createSocket(host, port);
+    socket.startHandshake();
+    X509Certificate[] certs = (X509Certificate[]) socket.getSession().getPeerCertificates();
+    socket.close();
+    return certs;
+}
+
+// 2. Stocker dans un TrustStore local (dans le workspace Eclipse)
+public void storeCert(X509Certificate cert, String alias, Path trustStorePath) throws Exception {
+    KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+    if (Files.exists(trustStorePath)) {
+        try (InputStream is = Files.newInputStream(trustStorePath)) {
+            ks.load(is, "changeit".toCharArray());
+        }
+    } else {
+        ks.load(null, null);
+    }
+    ks.setCertificateEntry(alias, cert);
+    try (OutputStream os = Files.newOutputStream(trustStorePath)) {
+        ks.store(os, "changeit".toCharArray());
+    }
+}
+
+// 3. Construire un HttpClient qui utilise ce TrustStore
+public HttpClient buildClientFromTrustStore(Path trustStorePath) throws Exception {
+    KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+    try (InputStream is = Files.newInputStream(trustStorePath)) {
+        ks.load(is, "changeit".toCharArray());
+    }
+    TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+    tmf.init(ks);
+    SSLContext sslContext = SSLContext.getInstance("TLS");
+    sslContext.init(null, tmf.getTrustManagers(), null);
+    return HttpClient.newBuilder().sslContext(sslContext).build();
+}
