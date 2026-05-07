@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""
+Confluence Label Manager
+------------------------
+Modes :
+  - add     : Ajoute une étiquette à une page et toutes ses pages enfants
+  - replace : Remplace une étiquette par une autre sur une page et toutes ses pages enfants
+"""
+
+import argparse
+import sys
+import requests
+from requests.auth import HTTPBasicAuth
+
+
+# ──────────────────────────────────────────────
+# Client Confluence
+# ──────────────────────────────────────────────
+
+class ConfluenceClient:
+    def __init__(self, base_url: str, email: str, api_key: str):
+        self.base_url = base_url.rstrip("/")
+        self.auth = HTTPBasicAuth(email, api_key)
+        self.headers = {"Accept": "application/json", "Content-Type": "application/json"}
+
+    def _get(self, path: str, params: dict = None) -> dict:
+        url = f"{self.base_url}/wiki/rest/api{path}"
+        response = requests.get(url, auth=self.auth, headers=self.headers, params=params)
+        response.raise_for_status()
+        return response.json()
+
+    def _post(self, path: str, payload: list | dict) -> dict:
+        url = f"{self.base_url}/wiki/rest/api{path}"
+        response = requests.post(url, auth=self.auth, headers=self.headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+    def _delete(self, path: str) -> None:
+        url = f"{self.base_url}/wiki/rest/api{path}"
+        response = requests.delete(url, auth=self.auth, headers=self.headers)
+        response.raise_for_status()
+
+    # ── Pages ──────────────────────────────────
+
+    def get_page(self, page_id: str) -> dict:
+        return self._get(f"/content/{page_id}", params={"expand": "metadata.labels"})
+
+    def get_children(self, page_id: str) -> list[dict]:
+        """Récupère récursivement toutes les pages enfants."""
+        pages = []
+        start = 0
+        limit = 50
+        while True:
+            data = self._get(
+                f"/content/{page_id}/child/page",
+                params={"expand": "metadata.labels", "start": start, "limit": limit},
+            )
+            results = data.get("results", [])
+            pages.extend(results)
+            for child in results:
+                pages.extend(self.get_children(child["id"]))
+            if len(results) < limit:
+                break
+            start += limit
+        return pages
+
+    # ── Labels ─────────────────────────────────
+
+    def get_labels(self, page_id: str) -> list[str]:
+        data = self._get(f"/content/{page_id}/label")
+        return [lbl["name"] for lbl in data.get("results", [])]
+
+    def add_label(self, page_id: str, label: str) -> None:
+        self._post(f"/content/{page_id}/label", [{"prefix": "global", "name": label}])
+
+    def remove_label(self, page_id: str, label: str) -> None:
+        self._delete(f"/content/{page_id}/label/{label}")
+
+
+# ──────────────────────────────────────────────
+# Logique métier
+# ──────────────────────────────────────────────
+
+def process_pages(
+    client: ConfluenceClient,
+    root_id: str,
+    label_add: str,
+    label_remove: str | None,
+    dry_run: bool,
+) -> None:
+    # Collecte de toutes les pages (racine + enfants)
+    print(f"\n🔍 Récupération de la page racine {root_id}…")
+    root_page = client.get_page(root_id)
+    all_pages = [root_page] + client.get_children(root_id)
+
+    print(f"📄 {len(all_pages)} page(s) trouvée(s)\n")
+
+    stats = {"added": 0, "removed": 0, "skipped": 0, "errors": 0}
+
+    for page in all_pages:
+        pid = page["id"]
+        title = page["title"]
+        try:
+            current_labels = client.get_labels(pid)
+
+            # ── Mode replace ──────────────────
+            if label_remove:
+                if label_remove not in current_labels:
+                    print(f"  ⏭  [{pid}] « {title} » — étiquette « {label_remove} » absente, ignorée")
+                    stats["skipped"] += 1
+                    continue
+
+                if not dry_run:
+                    client.remove_label(pid, label_remove)
+                stats["removed"] += 1
+                print(f"  🗑  [{pid}] « {title} » — « {label_remove} » supprimée")
+
+            # ── Ajout (commun aux deux modes) ─
+            if label_add in current_labels:
+                print(f"  ✅ [{pid}] « {title} » — « {label_add} » déjà présente")
+                stats["skipped"] += 1
+                continue
+
+            if not dry_run:
+                client.add_label(pid, label_add)
+            stats["added"] += 1
+            print(f"  ➕ [{pid}] « {title} » — « {label_add} » ajoutée")
+
+        except requests.HTTPError as exc:
+            print(f"  ❌ [{pid}] « {title} » — erreur HTTP : {exc}")
+            stats["errors"] += 1
+
+    # Résumé
+    mode = "REPLACE" if label_remove else "ADD"
+    dry = " (dry-run)" : ""
+    print(f"\n{'─'*50}")
+    print(f"Mode      : {mode}{dry}")
+    if label_remove:
+        print(f"Remplacé  : « {label_remove} » → « {label_add} »")
+    else:
+        print(f"Étiquette : « {label_add} »")
+    print(f"Ajoutées  : {stats['added']}")
+    if label_remove:
+        print(f"Supprimées: {stats['removed']}")
+    print(f"Ignorées  : {stats['skipped']}")
+    print(f"Erreurs   : {stats['errors']}")
+    print(f"{'─'*50}\n")
+
+
+# ──────────────────────────────────────────────
+# Point d'entrée CLI
+# ──────────────────────────────────────────────
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Gestion d'étiquettes Confluence sur une page et ses enfants.",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+
+    # Connexion
+    conn = parser.add_argument_group("Connexion")
+    conn.add_argument("--url",     required=True, help="URL de base Confluence (ex: https://mycompany.atlassian.net)")
+    conn.add_argument("--email",   required=True, help="Adresse e-mail du compte Atlassian")
+    conn.add_argument("--api-key", required=True, dest="api_key", help="Clé API Atlassian")
+
+    # Page
+    page = parser.add_argument_group("Page")
+    page.add_argument("--page-id", required=True, dest="page_id", help="ID de la page racine")
+
+    # Mode
+    mode = parser.add_argument_group("Mode")
+    mode.add_argument(
+        "--mode",
+        required=True,
+        choices=["add", "replace"],
+        help="add     → ajoute l'étiquette\nreplace → remplace une étiquette existante",
+    )
+    mode.add_argument("--label",        required=True, help="Étiquette à ajouter (ou nouvelle étiquette en mode replace)")
+    mode.add_argument("--label-remove",  dest="label_remove", help="Étiquette à supprimer (obligatoire en mode replace)")
+
+    # Options
+    opts = parser.add_argument_group("Options")
+    opts.add_argument("--dry-run", action="store_true", help="Simule les opérations sans les appliquer")
+
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    # Validation
+    if args.mode == "replace" and not args.label_remove:
+        print("❌ --label-remove est obligatoire en mode replace.", file=sys.stderr)
+        sys.exit(1)
+
+    client = ConfluenceClient(args.url, args.email, args.api_key)
+
+    if args.dry_run:
+        print("⚠️  Mode DRY-RUN activé — aucune modification ne sera effectuée.\n")
+
+    process_pages(
+        client=client,
+        root_id=args.page_id,
+        label_add=args.label,
+        label_remove=args.label_remove if args.mode == "replace" else None,
+        dry_run=args.dry_run,
+    )
+
+
+if __name__ == "__main__":
+    main()
